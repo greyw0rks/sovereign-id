@@ -707,6 +707,9 @@ export default function SovereignID() {
               </div>
             )}
 
+          </div>
+        </div>
+      </div>
 
       <Toast toast={toast}/>
 
