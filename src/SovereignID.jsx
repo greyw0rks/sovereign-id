@@ -64,8 +64,17 @@ function parseSybilError(msg) {
 }
 
 async function glRead(client, contract, method, args = []) {
-  const raw = await client.readContract({ contract, method, args });
-  return unwrapResult(raw);
+  // Try with stateStatus first (required by Bradbury), fallback without
+  try {
+    const raw = await client.readContract({ contract, method, args, stateStatus: "accepted" });
+    return unwrapResult(raw);
+  } catch(e) {
+    if (e?.message?.includes("gen_call") || e?.details?.includes("gen_call")) {
+      const raw = await client.readContract({ contract, method, args });
+      return unwrapResult(raw);
+    }
+    throw e;
+  }
 }
 async function glWrite(client, contract, method, args = []) {
   console.log("[glWrite]", method, args);
