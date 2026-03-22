@@ -1,5 +1,5 @@
-import { useState, useEffect } from "react";
 import { createClient } from "genlayer-js";
+import { testnetBradbury } from "genlayer-js/chains";
 
 const CONTRACTS = {
   identityRegistry: import.meta.env.VITE_IDENTITY_REGISTRY,
@@ -8,12 +8,6 @@ const CONTRACTS = {
   accessController: import.meta.env.VITE_ACCESS_CONTROLLER,
 };
 
-// Bradbury chain definition for genlayer-js createClient
-const bradbury = {
-  id: 4221,
-  name: "Genlayer Bradbury Testnet",
-  rpcUrl: import.meta.env.VITE_GENLAYER_RPC || "https://rpc-bradbury.genlayer.com",
-};
 
 const CLAIM_META = {
   github_ownership:     { label: "GitHub Ownership",     icon: "⬡" },
@@ -259,10 +253,9 @@ export default function SovereignID() {
 
       // Build genlayer-js client with Bradbury chain + MetaMask account
       const gl = createClient({
-        chain: bradbury,
-        account: { address: addr },
-      });
-      setClient(gl);
+  chain: testnetBradbury,
+  account: addr,  // just the address string — MetaMask handles signing
+});
 
       showToast("Wallet connected ✓", "success");
       await loadData(gl, addr);
