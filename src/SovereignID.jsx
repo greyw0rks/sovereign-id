@@ -70,8 +70,9 @@ async function glRead(client, contract, method, args = []) {
 async function glWrite(client, contract, method, args = []) {
   console.log("[glWrite]", method, args);
   const result = await client.sendTransaction({ contract, method, args });
-  console.log("[glWrite] tx:", result);
-  await new Promise(r => setTimeout(r, 12000));
+  console.log("[glWrite] tx hash:", result);
+  // Bradbury needs ~30s for 5 validators to reach consensus
+  await new Promise(r => setTimeout(r, 30000));
   return result;
 }
 
@@ -359,7 +360,7 @@ export default function SovereignID() {
       const accounts = await window.ethereum.request({ method:"eth_requestAccounts" });
       const addr = accounts[0];
       setWallet(addr);
-      const bradbury = { ...testnetBradbury, id:4221, name:"GenLayer Bradbury", nativeCurrency:{ name:"Gen", symbol:"GEN", decimals:18 }, rpcUrls:{ default:{ http:["https://zksync-os-testnet-genlayer.zksync.dev"] }, public:{ http:["https://zksync-os-testnet-genlayer.zksync.dev"] } } };
+      const bradbury = { ...testnetBradbury, id:4221, name:"GenLayer Bradbury", nativeCurrency:{ name:"Gen", symbol:"GEN", decimals:18 }, rpcUrls:{ default:{ http:["https://rpc-bradbury.genlayer.com"] }, public:{ http:["https://rpc-bradbury.genlayer.com"] } } };
       const gl = createClient({ chain:bradbury, transport:custom(window.ethereum), account:addr });
       setClient(gl);
       showToast("Wallet connected","success");
