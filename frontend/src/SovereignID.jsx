@@ -1,13 +1,28 @@
-import { createClient } from "genlayer-js";
-import { testnetBradbury } from "genlayer-js/chains";
+import { useState, useEffect } from "react";
 
-const CONTRACTS = {
-  identityRegistry: import.meta.env.VITE_IDENTITY_REGISTRY,
-  claimVerifier:    import.meta.env.VITE_CLAIM_VERIFIER,
-  reputationScorer: import.meta.env.VITE_REPUTATION_SCORER,
-  accessController: import.meta.env.VITE_ACCESS_CONTROLLER,
+const API = import.meta.env.VITE_API_URL || "http://16.171.21.181:4001";
+
+const glRead = async (contract, method, args = []) => {
+  const res = await fetch(`${API}/api/read`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ contract, method, args }),
+  });
+  const data = await res.json();
+  if (data.error) throw new Error(data.error);
+  return data.result;
 };
 
+const glWrite = async (contract, method, args = []) => {
+  const res = await fetch(`${API}/api/write`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ contract, method, args }),
+  });
+  const data = await res.json();
+  if (data.error) throw new Error(data.error);
+  return data;
+};
 
 const CLAIM_META = {
   github_ownership:     { label: "GitHub Ownership",     icon: "⬡" },
@@ -19,6 +34,13 @@ const CLAIM_META = {
 
 const RISK_COLORS = {
   low: "#00e5a0", medium: "#f5c518", high: "#ff8c42", critical: "#ff2d55",
+};
+
+const CONTRACTS_DISPLAY = {
+  identityRegistry: import.meta.env.VITE_IDENTITY_REGISTRY,
+  claimVerifier:    import.meta.env.VITE_CLAIM_VERIFIER,
+  reputationScorer: import.meta.env.VITE_REPUTATION_SCORER,
+  accessController: import.meta.env.VITE_ACCESS_CONTROLLER,
 };
 
 function hexScore(s) {
@@ -36,10 +58,9 @@ function truncate(addr) {
 function safeJson(val, fallback = null) {
   if (val === null || val === undefined) return fallback;
   if (typeof val === "object") return val;
-  try { return JSON.parse(val); } catch { return fallback; }
+  const cleaned = val.replace(/Address\("([^"]+)"\)/g, '"$1"');
+  try { return JSON.parse(cleaned); } catch { return fallback; }
 }
-
-// ─── Sub-components ──────────────────────────────────────────────────────────
 
 function ScoreRing({ score, size = 130 }) {
   const r = size / 2 - 10;
@@ -120,9 +141,7 @@ function ResourceRow({ res }) {
         {res.has_access ? "✓" : "✗"}
       </span>
       <div style={{ flex:1, minWidth:0 }}>
-        <div style={{ fontSize:13, fontFamily:"'Space Mono',monospace", color:"rgba(255,255,255,.8)", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>
-          {res.resource_id}
-        </div>
+        <div style={{ fontSize:13, fontFamily:"'Space Mono',monospace", color:"rgba(255,255,255,.8)", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{res.resource_id}</div>
         <div style={{ fontSize:11, color:"rgba(255,255,255,.28)", marginTop:1 }}>
           Min score {res.min_score} · Claims: <span style={{ color:"rgba(127,255,255,.5)" }}>{res.required_claims || "none"}</span>
         </div>
@@ -189,12 +208,9 @@ function ClaimModal({ onClose, onSubmit, loading }) {
   );
 }
 
-// ─── Main App ─────────────────────────────────────────────────────────────────
-
 export default function SovereignID() {
   const [tab, setTab] = useState("identity");
   const [wallet, setWallet] = useState(null);
-  const [client, setClient] = useState(null);
   const [identity, setIdentity] = useState(null);
   const [claims, setClaims] = useState([]);
   const [score, setScore] = useState(null);
@@ -216,49 +232,16 @@ export default function SovereignID() {
     setTimeout(() => setToast(null), 4500);
   };
 
-  // ── Helpers ────────────────────────────────────────────────────────────────
-
-  const glRead = async (gl, contractKey, functionName, args = []) => {
-    return gl.readContract({
-      address: CONTRACTS[contractKey],
-      functionName,
-      args,
-    });
-  };
-
-  const glWrite = async (gl, contractKey, functionName, args = []) => {
-    const hash = await gl.writeContract({
-      address: CONTRACTS[contractKey],
-      functionName,
-      args,
-      value: 0,
-    });
-    // Wait for ACCEPTED status (not FINALIZED — too slow for UX)
-    await gl.waitForTransactionReceipt({ hash, status: "ACCEPTED" });
-    return hash;
-  };
-
-  // ── Connect ────────────────────────────────────────────────────────────────
-
   const connectWallet = async () => {
     try {
       setAppLoading(true);
       setError(null);
-
       if (!window.ethereum) throw new Error("MetaMask not detected");
-
       const accounts = await window.ethereum.request({ method: "eth_requestAccounts" });
       const addr = accounts[0];
       setWallet(addr);
-
-      // Build genlayer-js client with Bradbury chain + MetaMask account
-      const gl = createClient({
-  chain: testnetBradbury,
-  account: addr,  // just the address string — MetaMask handles signing
-});
-
       showToast("Wallet connected ✓", "success");
-      await loadData(gl, addr);
+      await loadData(addr);
     } catch (err) {
       setError(err.message || "Failed to connect wallet");
       showToast("Connection failed", "error");
@@ -267,37 +250,27 @@ export default function SovereignID() {
     }
   };
 
-  // ── Load on-chain data ─────────────────────────────────────────────────────
-
-  const loadData = async (gl, addr) => {
+  const loadData = async (addr) => {
     try {
       setAppLoading(true);
+      const registered = await glRead("identityRegistry", "is_registered", [addr]);
+      const isReg = registered === "True" || registered === true || registered === "true";
+      if (!isReg) { setIdentity(null); setClaims([]); setScore(null); return; }
 
-      // Check registration
-      const registered = await glRead(gl, "identityRegistry", "is_registered", [addr]);
-      if (!registered) { setIdentity(null); setClaims([]); setScore(null); return; }
-
-      // Identity
-      const rawId = await glRead(gl, "identityRegistry", "get_identity", [addr]);
+      const rawId = await glRead("identityRegistry", "get_identity", [addr]);
       setIdentity(safeJson(rawId));
 
-      // Claims
-      const rawIds = await glRead(gl, "claimVerifier", "get_claims_for_address", [addr]);
+      const rawIds = await glRead("claimVerifier", "get_claims_for_address", [addr]);
       const ids = safeJson(rawIds, []);
       const claimData = await Promise.all(
-        ids.map(id =>
-          glRead(gl, "claimVerifier", "get_claim", [id])
-            .then(r => safeJson(r))
-            .catch(() => null)
-        )
+        ids.map(id => glRead("claimVerifier", "get_claim", [id]).then(r => safeJson(r)).catch(() => null))
       );
       setClaims(claimData.filter(Boolean));
 
-      // Score (may not exist yet)
       try {
-        const rawScore = await glRead(gl, "reputationScorer", "get_score", [addr]);
+        const rawScore = await glRead("reputationScorer", "get_score", [addr]);
         setScore(safeJson(rawScore));
-      } catch { /* not scored yet — that's fine */ }
+      } catch { /* not scored yet */ }
 
     } catch (err) {
       setError("Failed to load data: " + err.message);
@@ -307,18 +280,16 @@ export default function SovereignID() {
     }
   };
 
-  // ── Actions ────────────────────────────────────────────────────────────────
-
   const handleRegister = async () => {
-    if (!client || !wallet) return;
+    if (!wallet) return;
     try {
       setAppLoading(true);
-      await glWrite(client, "identityRegistry", "register_identity", [
+      await glWrite("identityRegistry", "register_identity", [
         "QmW2WQi7j6c7UaJkARcFfBUPmJqPuoE3iDdSf8VXQP4EHe",
         "greyw0rks",
       ]);
       showToast("Identity registered on Bradbury ✓", "success");
-      await loadData(client, wallet);
+      await loadData(wallet);
     } catch (err) {
       showToast("Registration failed: " + err.message, "error");
     } finally {
@@ -327,13 +298,13 @@ export default function SovereignID() {
   };
 
   const handleSubmitClaim = async (claimType, url) => {
-    if (!client || !wallet) return;
+    if (!wallet) return;
     setModalLoading(true);
     try {
-      await glWrite(client, "claimVerifier", "submit_claim", [claimType, url]);
+      await glWrite("claimVerifier", "submit_claim", [claimType, url]);
       showToast("Claim accepted — AI validators verified it ✓", "success");
       setShowModal(false);
-      await loadData(client, wallet);
+      await loadData(wallet);
     } catch (err) {
       showToast("Claim failed: " + err.message, "error");
     } finally {
@@ -342,18 +313,18 @@ export default function SovereignID() {
   };
 
   const handleRevoke = async (claimId) => {
-    if (!client) return;
+    if (!wallet) return;
     try {
-      await glWrite(client, "claimVerifier", "revoke_claim", [claimId]);
+      await glWrite("claimVerifier", "revoke_claim", [claimId]);
       showToast("Claim revoked ✓", "success");
-      await loadData(client, wallet);
+      await loadData(wallet);
     } catch (err) {
       showToast("Revoke failed: " + err.message, "error");
     }
   };
 
   const handleComputeScore = async () => {
-    if (!client || !wallet) return;
+    if (!wallet) return;
     setComputing(true);
     try {
       const verified = claims.filter(c => c.is_verified);
@@ -368,9 +339,9 @@ export default function SovereignID() {
         avg_confidence: avgConf,
         has_contradictions: false,
       });
-      await glWrite(client, "reputationScorer", "compute_score", [wallet, summary]);
+      await glWrite("reputationScorer", "compute_score", [wallet, summary]);
       showToast("Score computed ✓", "success");
-      await loadData(client, wallet);
+      await loadData(wallet);
     } catch (err) {
       showToast("Score failed: " + err.message, "error");
     } finally {
@@ -378,15 +349,11 @@ export default function SovereignID() {
     }
   };
 
-  // ── Derived state ──────────────────────────────────────────────────────────
-
   const verifiedClaims = claims.filter(c => c.is_verified);
   const avgConf = verifiedClaims.length
     ? Math.round(verifiedClaims.reduce((a, c) => a + c.confidence, 0) / verifiedClaims.length)
     : 0;
   const tabs = ["identity", "claims", "reputation", "access"];
-
-  // ── Landing ────────────────────────────────────────────────────────────────
 
   if (!wallet) {
     return (
@@ -405,25 +372,18 @@ export default function SovereignID() {
             <p style={{ fontSize:13, color:"rgba(255,255,255,.4)", marginBottom:10, lineHeight:1.7 }}>Decentralized identity on GenLayer Bradbury Testnet</p>
             <div style={{ fontSize:11, fontFamily:"'Space Mono',monospace", color:"rgba(127,255,255,.5)", background:"rgba(127,255,255,.05)", border:"1px solid rgba(127,255,255,.12)", padding:"4px 12px", borderRadius:4, display:"inline-block", marginBottom:32 }}>BRADBURY TESTNET</div>
             <br/>
-            {error && (
-              <div style={{ background:"rgba(255,45,85,.1)", border:"1px solid rgba(255,45,85,.25)", borderRadius:8, padding:"10px 14px", marginBottom:16, fontSize:12, color:"#ff6b8a" }}>{error}</div>
-            )}
+            {error && <div style={{ background:"rgba(255,45,85,.1)", border:"1px solid rgba(255,45,85,.25)", borderRadius:8, padding:"10px 14px", marginBottom:16, fontSize:12, color:"#ff6b8a" }}>{error}</div>}
             {!window.ethereum
               ? <div style={{ background:"rgba(245,197,24,.08)", border:"1px solid rgba(245,197,24,.2)", borderRadius:8, padding:16, fontSize:12, color:"rgba(245,197,24,.8)", lineHeight:1.7 }}>MetaMask not detected.<br/>Install MetaMask and refresh.</div>
-              : (
-                <button onClick={connectWallet} disabled={appLoading}
-                  style={{ padding:"14px 36px", borderRadius:9, border:"none", background:"rgba(0,229,160,.9)", color:"#000", fontFamily:"'Space Mono',monospace", fontSize:13, letterSpacing:1.5, fontWeight:700, cursor: appLoading ? "wait" : "pointer" }}>
+              : <button onClick={connectWallet} disabled={appLoading} style={{ padding:"14px 36px", borderRadius:9, border:"none", background:"rgba(0,229,160,.9)", color:"#000", fontFamily:"'Space Mono',monospace", fontSize:13, letterSpacing:1.5, fontWeight:700, cursor: appLoading ? "wait" : "pointer" }}>
                   {appLoading ? "CONNECTING…" : "CONNECT WALLET"}
                 </button>
-              )
             }
           </div>
         </div>
       </>
     );
   }
-
-  // ── Main Dashboard ─────────────────────────────────────────────────────────
 
   return (
     <>
@@ -440,8 +400,6 @@ export default function SovereignID() {
       <div style={{ minHeight:"100vh", background:"#07090c", color:"#fff", fontFamily:"'DM Sans',sans-serif" }}>
         <div style={{ position:"fixed", inset:0, zIndex:0, pointerEvents:"none", backgroundImage:"linear-gradient(rgba(127,255,255,.018) 1px,transparent 1px),linear-gradient(90deg,rgba(127,255,255,.018) 1px,transparent 1px)", backgroundSize:"44px 44px" }}/>
         <div style={{ position:"fixed", top:-160, right:-80, width:700, height:700, background:"radial-gradient(circle,rgba(0,229,160,.055) 0%,transparent 70%)", pointerEvents:"none", zIndex:0 }}/>
-
-        {/* Header */}
         <header style={{ position:"sticky", top:0, zIndex:50, borderBottom:"1px solid rgba(255,255,255,.055)", background:"rgba(7,9,12,.88)", backdropFilter:"blur(24px)" }}>
           <div style={{ maxWidth:980, margin:"0 auto", padding:"0 20px", display:"flex", alignItems:"center", justifyContent:"space-between", height:54 }}>
             <div style={{ display:"flex", alignItems:"center", gap:10 }}>
@@ -460,16 +418,13 @@ export default function SovereignID() {
             </div>
           </div>
         </header>
-
         <main style={{ maxWidth:980, margin:"0 auto", padding:"24px 20px 60px", position:"relative", zIndex:1 }}>
-          {/* Tabs */}
           <div style={{ display:"flex", gap:3, marginBottom:24, background:"rgba(255,255,255,.025)", borderRadius:9, padding:4 }}>
             {tabs.map(t => (
               <button key={t} onClick={() => setTab(t)} style={{ flex:1, padding:"8px 0", borderRadius:6, border:"none", cursor:"pointer", background: tab===t ? "rgba(255,255,255,.07)" : "transparent", color: tab===t ? "rgba(255,255,255,.9)" : "rgba(255,255,255,.28)", fontFamily:"'Space Mono',monospace", fontSize:10, letterSpacing:2, transition:"all .15s" }}>{t.toUpperCase()}</button>
             ))}
           </div>
 
-          {/* Identity Tab */}
           {tab === "identity" && (
             <div style={{ animation:"fadeIn .3s ease" }}>
               {!identity ? (
@@ -477,8 +432,7 @@ export default function SovereignID() {
                   <div style={{ fontSize:32, marginBottom:16 }}>◈</div>
                   <div style={{ fontSize:14, color:"rgba(255,255,255,.5)", marginBottom:8 }}>No identity registered yet</div>
                   <p style={{ fontSize:12, color:"rgba(255,255,255,.3)", marginBottom:24, lineHeight:1.7 }}>Register your sovereign identity on GenLayer Bradbury to begin building verified claims.</p>
-                  <button onClick={handleRegister} disabled={appLoading}
-                    style={{ padding:"11px 28px", borderRadius:8, border:"none", background:"rgba(0,229,160,.9)", color:"#000", fontFamily:"'Space Mono',monospace", fontSize:12, letterSpacing:1.5, fontWeight:700, cursor:"pointer" }}>
+                  <button onClick={handleRegister} disabled={appLoading} style={{ padding:"11px 28px", borderRadius:8, border:"none", background:"rgba(0,229,160,.9)", color:"#000", fontFamily:"'Space Mono',monospace", fontSize:12, letterSpacing:1.5, fontWeight:700, cursor:"pointer" }}>
                     {appLoading ? "REGISTERING…" : "REGISTER IDENTITY"}
                   </button>
                 </div>
@@ -522,13 +476,11 @@ export default function SovereignID() {
             </div>
           )}
 
-          {/* Claims Tab */}
           {tab === "claims" && (
             <div style={{ animation:"fadeIn .3s ease" }}>
               <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:16 }}>
                 <span style={{ fontSize:9, letterSpacing:3, color:"rgba(255,255,255,.25)", fontFamily:"'Space Mono',monospace" }}>IDENTITY CLAIMS</span>
-                <button onClick={() => setShowModal(true)}
-                  style={{ fontSize:10, letterSpacing:1.5, background:"rgba(0,229,160,.9)", color:"#000", border:"none", padding:"6px 14px", borderRadius:6, cursor:"pointer", fontFamily:"'Space Mono',monospace", fontWeight:700 }}>+ ADD CLAIM</button>
+                <button onClick={() => setShowModal(true)} style={{ fontSize:10, letterSpacing:1.5, background:"rgba(0,229,160,.9)", color:"#000", border:"none", padding:"6px 14px", borderRadius:6, cursor:"pointer", fontFamily:"'Space Mono',monospace", fontWeight:700 }}>+ ADD CLAIM</button>
               </div>
               {claims.length === 0
                 ? <div style={{ textAlign:"center", padding:40, color:"rgba(255,255,255,.3)", fontSize:13 }}>No claims yet. Add your first identity claim above.</div>
@@ -541,7 +493,6 @@ export default function SovereignID() {
             </div>
           )}
 
-          {/* Reputation Tab */}
           {tab === "reputation" && (
             <div style={{ animation:"fadeIn .3s ease" }}>
               <div style={{ fontSize:9, letterSpacing:3, color:"rgba(255,255,255,.25)", marginBottom:16, fontFamily:"'Space Mono',monospace" }}>AI REPUTATION SCORE</div>
@@ -568,9 +519,7 @@ export default function SovereignID() {
                     {score.fraud_flags && (
                       <div style={{ background:"rgba(255,140,66,.05)", border:"1px solid rgba(255,140,66,.2)", borderRadius:8, padding:16, marginBottom:12 }}>
                         <div style={{ fontSize:9, letterSpacing:2, color:"#ff8c42", marginBottom:6 }}>FRAUD FLAGS</div>
-                        {score.fraud_flags.split("|").map(f => (
-                          <span key={f} style={{ display:"inline-block", fontSize:11, background:"rgba(255,140,66,.1)", color:"#ff8c42", padding:"2px 8px", borderRadius:4, marginRight:6 }}>{f}</span>
-                        ))}
+                        {score.fraud_flags.split("|").map(f => <span key={f} style={{ display:"inline-block", fontSize:11, background:"rgba(255,140,66,.1)", color:"#ff8c42", padding:"2px 8px", borderRadius:4, marginRight:6 }}>{f}</span>)}
                       </div>
                     )}
                     <button onClick={handleComputeScore} disabled={computing}
@@ -583,7 +532,6 @@ export default function SovereignID() {
             </div>
           )}
 
-          {/* Access Tab */}
           {tab === "access" && (
             <div style={{ animation:"fadeIn .3s ease" }}>
               <div style={{ fontSize:9, letterSpacing:3, color:"rgba(255,255,255,.25)", marginBottom:6, fontFamily:"'Space Mono',monospace" }}>RESOURCE ACCESS</div>
@@ -595,7 +543,7 @@ export default function SovereignID() {
               </div>
               <div style={{ background:"rgba(255,255,255,.02)", border:"1px solid rgba(255,255,255,.055)", borderRadius:9, padding:18 }}>
                 <div style={{ fontSize:9, letterSpacing:2.5, color:"rgba(255,255,255,.2)", marginBottom:12, fontFamily:"'Space Mono',monospace" }}>DEPLOYED CONTRACTS · BRADBURY</div>
-                {Object.entries(CONTRACTS).map(([k, v]) => (
+                {Object.entries(CONTRACTS_DISPLAY).map(([k, v]) => (
                   <div key={k} style={{ display:"flex", justifyContent:"space-between", marginBottom:8, flexWrap:"wrap", gap:4 }}>
                     <span style={{ fontSize:11, color:"rgba(255,255,255,.35)" }}>{k}</span>
                     <span style={{ fontSize:11, fontFamily:"'Space Mono',monospace", color:"rgba(127,255,255,.6)" }}>{truncate(v)}</span>
@@ -606,7 +554,6 @@ export default function SovereignID() {
           )}
         </main>
 
-        {/* Toast */}
         {toast && (
           <div style={{ position:"fixed", bottom:24, left:"50%", zIndex:300,
             background: toast.type==="success" ? "rgba(0,229,160,.95)" : toast.type==="error" ? "rgba(255,45,85,.9)" : "rgba(20,24,32,.97)",
@@ -615,7 +562,6 @@ export default function SovereignID() {
             boxShadow:"0 12px 40px rgba(0,0,0,.5)", animation:"slideUp .25s ease",
             transform:"translateX(-50%)" }}>{toast.msg}</div>
         )}
-
         {showModal && <ClaimModal onClose={() => setShowModal(false)} onSubmit={handleSubmitClaim} loading={modalLoading}/>}
       </div>
     </>
