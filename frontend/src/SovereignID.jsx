@@ -284,7 +284,7 @@ export default function SovereignID() {
     if (!wallet) return;
     try {
       setAppLoading(true);
-      await glWrite("identityRegistry", "register_identity", [
+      await glWrite("identityRegistry", "register_identity", [wallet,
         "QmW2WQi7j6c7UaJkARcFfBUPmJqPuoE3iDdSf8VXQP4EHe",
         "greyw0rks",
       ]);
@@ -301,7 +301,7 @@ export default function SovereignID() {
     if (!wallet) return;
     setModalLoading(true);
     try {
-      await glWrite("claimVerifier", "submit_claim", [claimType, url]);
+      await glWrite("claimVerifier", "submit_claim", [wallet, claimType, url]);
       showToast("Claim accepted — AI validators verified it ✓", "success");
       setShowModal(false);
       await loadData(wallet);
